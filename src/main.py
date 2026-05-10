@@ -4,9 +4,7 @@ import mediapipe as mp
 import os
 import sys
 
-# ─────────────────────────────────────────────
-#  CONFIGURAÇÕES
-# ─────────────────────────────────────────────
+
 ASSETS_DIR = "assets"
 
 ACCESSORIES = {
@@ -16,18 +14,14 @@ ACCESSORIES = {
 }
 ACCESSORY_KEYS = list(ACCESSORIES.keys())
 
-# Índices dos landmarks (MediaPipe Face Mesh)
-# Olhos
+
 LEFT_EYE_OUTER  = 33
 RIGHT_EYE_OUTER = 263
-# Topo da cabeça (chapéu) — ponto mais alto do rosto
+
 FOREHEAD_TOP    = 10
-# Nariz (base para bigode)
 NOSE_BASE       = 164
 
-# ─────────────────────────────────────────────
-#  CARREGAMENTO DE ACESSÓRIOS
-# ─────────────────────────────────────────────
+
 def load_accessories():
     loaded = {}
     for name, cfg in ACCESSORIES.items():
@@ -36,7 +30,7 @@ def load_accessories():
         if img is None:
             print(f"[AVISO] Não encontrei '{path}'. O acessório '{name}' será ignorado.")
         else:
-            # Garante 4 canais (BGRA)
+
             if img.shape[2] == 3:
                 b, g, r = cv2.split(img)
                 alpha = np.ones(b.shape, dtype=b.dtype) * 255
@@ -45,26 +39,20 @@ def load_accessories():
             print(f"[OK] Acessório carregado: {name} ({path})")
     return loaded
 
-# ─────────────────────────────────────────────
-#  SOBREPOSIÇÃO VETORIZADA (sem loop Python)
-# ─────────────────────────────────────────────
+
 def overlay_transparent(background, overlay, cx, cy, width, angle):
-    """
-    Sobrepõe 'overlay' (BGRA) no 'background' (BGR).
-    cx, cy  : centro de posicionamento
-    width   : largura desejada em pixels
-    angle   : rotação em graus
-    """
+   
+   
     if overlay is None:
         return background
 
-    # 1. Redimensiona mantendo proporção
+
     aspect = overlay.shape[0] / overlay.shape[1]
     new_w = max(width, 10)
     new_h = max(int(new_w * aspect), 10)
     resized = cv2.resize(overlay, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    # 2. Rotaciona
+    
     M = cv2.getRotationMatrix2D((new_w / 2, new_h / 2), angle, 1.0)
     rotated = cv2.warpAffine(
         resized, M, (new_w, new_h),
@@ -77,7 +65,6 @@ def overlay_transparent(background, overlay, cx, cy, width, angle):
     y1, y2 = cy - h // 2, cy - h // 2 + h
     x1, x2 = cx - w // 2, cx - w // 2 + w
 
-    # 3. Recorta se sair da tela
     bg_h, bg_w = background.shape[:2]
     oy1, oy2 = max(0, -y1), h - max(0, y2 - bg_h)
     ox1, ox2 = max(0, -x1), w - max(0, x2 - bg_w)
@@ -91,7 +78,6 @@ def overlay_transparent(background, overlay, cx, cy, width, angle):
     if roi.shape[0] == 0 or roi.shape[1] == 0:
         return background
 
-    # 4. Alpha blending vetorizado (muito mais rápido que loop)
     alpha = roi[:, :, 3:4].astype(np.float32) / 255.0
     fg    = roi[:, :, :3].astype(np.float32)
     bg    = background[y1:y2, x1:x2].astype(np.float32)
@@ -100,14 +86,12 @@ def overlay_transparent(background, overlay, cx, cy, width, angle):
     background[y1:y2, x1:x2] = blended.astype(np.uint8)
     return background
 
-# ─────────────────────────────────────────────
-#  CÁLCULO DE GEOMETRIA FACIAL
-# ─────────────────────────────────────────────
+
 def get_landmark_px(landmark, w, h):
     return int(landmark.x * w), int(landmark.y * h)
 
 def compute_geometry(face_landmarks, frame_w, frame_h):
-    """Retorna: centro dos olhos, distância, ângulo, ponto topo, ponto nariz."""
+
     lm = face_landmarks.landmark
 
     left_pt  = np.array(get_landmark_px(lm[LEFT_EYE_OUTER],  frame_w, frame_h))
@@ -124,9 +108,7 @@ def compute_geometry(face_landmarks, frame_w, frame_h):
 
     return center, eye_dist, angle, top_pt, nose_pt
 
-# ─────────────────────────────────────────────
-#  FUNÇÃO PRINCIPAL
-# ─────────────────────────────────────────────
+
 def main():
     accessories = load_accessories()
 
@@ -136,7 +118,6 @@ def main():
         print("Nomes esperados: oculos.png, chapeu.png, bigode.png")
         sys.exit(1)
 
-    # Índice do acessório atual
     available = [k for k in ACCESSORY_KEYS if k in accessories]
     current_idx = 0
 
@@ -164,7 +145,7 @@ def main():
         if not ok:
             break
 
-        frame = cv2.flip(frame, 1)          # espelha (mais intuitivo)
+        frame = cv2.flip(frame, 1)          
         frame_h, frame_w = frame.shape[:2]
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -180,21 +161,20 @@ def main():
                     face_landmarks, frame_w, frame_h
                 )
 
-                # Escolhe ponto de ancoragem e escala conforme acessório
                 if current_name == "chapeu":
                     anchor_x = int(center[0])
                     anchor_y = int(top_pt[1] + eye_dist * cfg["offset_y"])
                 elif current_name == "bigode":
                     anchor_x = int(nose_pt[0])
                     anchor_y = int(nose_pt[1] + eye_dist * cfg["offset_y"])
-                else:  # óculos (padrão)
+                else:  
                     anchor_x = int(center[0])
                     anchor_y = int(center[1] + eye_dist * cfg["offset_y"])
 
                 size = int(eye_dist * cfg["scale"])
                 frame = overlay_transparent(frame, img, anchor_x, anchor_y, size, -angle)
 
-        # HUD
+        
         label = f"Acessorio: {current_name}  |  [A]/[D] trocar  [Q] sair"
         cv2.rectangle(frame, (0, 0), (frame_w, 30), (0, 0, 0), -1)
         cv2.putText(frame, label, (10, 20),
