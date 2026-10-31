@@ -20,6 +20,10 @@ PITCH_CALIB_FRAMES = 30
 MEASURE_DIR = "medicoes"
 CHECK_DIR = "conferencia"
 
+LIGHT_MATCH = True
+LIGHT_REF = 180
+LIGHT_MIN_GAIN = 0.45
+
 HOLD_SECONDS = 0.3
 ALPHA_THRESHOLD = 10
 YAW_HIDE = 0.3
@@ -96,9 +100,8 @@ FIT_RULES = {
 
 ACCESSORIES = {
 
-    "bone":           {"file": "bone.png",           "nome": "Boné",           "categoria": "chapeus",   "tipo": "chapeu", "pivot": (0.5, 1.0), "width_factor": 1.15, "anchor_shift": 0.25},
+    "bone":           {"file": "bone.png",           "nome": "Boné",           "categoria": "chapeus",   "tipo": "chapeu", "pivot": (0.5, 1.0), "width_factor": 1.05, "anchor_shift": 0.21},
     "boina":          {"file": "chapeu.png",         "nome": "Boina",          "categoria": "chapeus",   "tipo": "chapeu", "pivot": (0.5, 0.88), "width_factor": 1.15, "anchor_shift": 0.12},
-
     "oculos_aviador": {"file": "oculo2.png",         "nome": "Aviador",        "categoria": "oculos",    "tipo": "oculos", "pivot": (0.5, 0.5),  "width_factor": 1.15, "remove_holes": True},
     "oculos_sol":     {"file": "oculos.png",         "nome": "Óculos de sol",  "categoria": "oculos",    "tipo": "oculos", "pivot": (0.5, 0.48), "width_factor": 1.1},
     "oculos_gatinho": {"file": "oculos3.png",        "nome": "Gatinho",        "categoria": "oculos",    "tipo": "oculos", "pivot": (0.5, 0.5),  "width_factor": 1.1},
@@ -198,6 +201,12 @@ def load_accessories():
             img = remove_background(img, remove_holes=cfg.get("remove_holes", False))
             print(f"[AVISO] '{os.path.basename(path)}' nao tem fundo transparente: removi o fundo "
                   f"automaticamente. Confira se ficou bom; se nao, use um PNG transparente.")
+
+        if cfg.get("remove_light"):
+            bgr = img[:, :, :3].astype(np.int16)
+            mn, mx = bgr.min(axis=2), bgr.max(axis=2)
+            light = (mn > cfg["remove_light"]) & ((mx - mn) < 30)
+            img[:, :, 3][light] = 0
 
         img = trim_transparent(img)
         if cfg.get("crop_top"):
@@ -348,7 +357,7 @@ def get_placements(fit, face):
     return [(a[fit["anchor"]], False)]
 
 def overlay_at_pivot(frame, img, pivot, anchor, width, angle_deg,
-                     squash_x=1.0, squash_y=1.0, flip=False):
+                     squash_x=1.0, squash_y=1.0, flip=False, gain=1.0):
     if width < 2:
         return frame
 
@@ -399,11 +408,22 @@ def overlay_at_pivot(frame, img, pivot, anchor, width, angle_deg,
 
     alpha = warped[:, :, 3:4].astype(np.float32) / 255.0
     roi = frame[y0:y1, x0:x1].astype(np.float32)
-    blended = warped[:, :, :3].astype(np.float32) * alpha + roi * (1.0 - alpha)
+
+    blended = warped[:, :, :3].astype(np.float32) * gain * alpha + roi * (1.0 - alpha)
     frame[y0:y1, x0:x1] = blended.astype(np.uint8)
     return frame
 
-def draw_accessory(frame, img, fit, face):
+def face_brightness(frame, face):
+    cx, cy = face["anchors"]["eyes"]
+    nose_y = face["anchors"]["septum"][1]
+    half_w = face["measures"]["face_width"] * 0.2
+    x0, x1 = int(max(cx - half_w, 0)), int(min(cx + half_w, frame.shape[1]))
+    y0, y1 = int(max(cy, 0)), int(min(nose_y, frame.shape[0]))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return float(cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).mean())
+
+def draw_accessory(frame, img, fit, face, gain=1.0):
     width = face["measures"][fit["width_ref"]] * fit["width_factor"]
     squash_x = max(np.cos(np.radians(face["yaw"])), MIN_PERSP) if fit["persp_x"] else 1.0
     squash_y = max(np.cos(np.radians(face["pitch"])), MIN_PERSP) if fit["persp_y"] else 1.0
@@ -414,7 +434,7 @@ def draw_accessory(frame, img, fit, face):
         point = point + shift
         points.append(point)
         frame = overlay_at_pivot(frame, img, fit["pivot"], point, width, face["roll"],
-                                 squash_x=squash_x, squash_y=squash_y, flip=flip)
+                                 squash_x=squash_x, squash_y=squash_y, flip=flip, gain=gain)
     return frame, points, width
 
 def load_font(candidates, size):
@@ -653,6 +673,7 @@ def main():
 
     landmark_filter = OneEuroFilter(FILTER_MIN_CUTOFF, FILTER_BETA, FILTER_D_CUTOFF)
     filter_on = True
+    light_gain = 1.0
 
     pitch_samples = []
     pitch_offset = 0.0
@@ -762,8 +783,13 @@ def main():
             key_active = active_key()
             anchor_points, acc_width = [], 0.0
             if key_active and last_face is not None:
+                if LIGHT_MATCH:
+                    lum = face_brightness(frame, last_face)
+                    if lum is not None:
+                        target = float(np.clip(lum / LIGHT_REF, LIGHT_MIN_GAIN, 1.0))
+                        light_gain = 0.9 * light_gain + 0.1 * target
                 frame, anchor_points, acc_width = draw_accessory(
-                    frame, accessories[key_active], get_fit(key_active), last_face)
+                    frame, accessories[key_active], get_fit(key_active), last_face, light_gain)
 
             extra = ""
             if measure_mode:
